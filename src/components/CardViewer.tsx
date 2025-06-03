@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+const backendURL = process.env.NEXT_PUBLIC_BACKEND_URL!;
+import { supabase } from "../supabaseClient";
+import React, { useState, useEffect, useRef } from "react";
 
 // Add custom CSS for 3D flip animation
 const flipStyles = `
@@ -56,12 +58,17 @@ const CardViewer: React.FC<CardViewerProps> = ({ cards }) => {
     const [selectedOptionIndex, setSelectedOptionIndex] = useState<number | null>(null);
     const [showOnlyCorrectAnswer, setShowOnlyCorrectAnswer] = useState(false); // For "Show Answer" functionality
     const [isFlipping, setIsFlipping] = useState(false);
+    const [correctAnswers, setCorrectAnswers] = useState(0);
+    const [isQuizComplete, setIsQuizComplete] = useState(false);
+
+    const isMounted = useRef(false);
 
     // Reset state when card changes
     useEffect(() => {
         setSelectedOptionIndex(null);
         setShowOnlyCorrectAnswer(false);
         setIsFlipping(false);
+        isMounted.current = false;
     }, [currentIndex]);
 
     // Show loading animation when no cards are available
@@ -74,17 +81,14 @@ const CardViewer: React.FC<CardViewerProps> = ({ cards }) => {
     const handleNext = () => {
         if (currentIndex < cards.length - 1) {
             setCurrentIndex((prev) => prev + 1);
-            // setSelectedOptionIndex(null); // Already handled by useEffect
-            // setShowOnlyCorrectAnswer(false); // Already handled by useEffect
+        } else {
+            setIsQuizComplete(true);
         }
     };
 
-    const handlePrev = () => {
-        if (currentIndex > 0) {
-            setCurrentIndex((prev) => prev - 1);
-            // setSelectedOptionIndex(null); // Already handled by useEffect
-            // setShowOnlyCorrectAnswer(false); // Already handled by useEffect
-        }
+    const handleNewQuiz = () => {
+        //forces a hard reload the page which will get new random cards
+        window.location.href = window.location.href;
     };
 
     const handleOptionClick = (index: number) => {
@@ -109,7 +113,25 @@ const CardViewer: React.FC<CardViewerProps> = ({ cards }) => {
         return "options" in answer && "correct_index" in answer;
     };
 
-    let isNextButtonDisabled = currentIndex === cards.length - 1;
+    const recordAnswer = async (isCorrect : boolean, currentCardId : string) =>
+    {
+            const { data: sessionData } = await supabase.auth.getSession();
+            const accessToken = sessionData.session?.access_token;
+
+            //fire and forget - do not await.
+            fetch(`${backendURL}/card/recordAnswer`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${accessToken}`,
+                },                body: JSON.stringify({
+                    isCorrect,
+                    card_id: currentCardId
+                }),
+            });
+    }
+    
+    let isNextButtonDisabled = false;
     let showShowAnswerButton = false;
 
     if (currentCard.answer_type === "select" && isSelectAnswer(currentCard.answers)) {
@@ -117,17 +139,26 @@ const CardViewer: React.FC<CardViewerProps> = ({ cards }) => {
             isNextButtonDisabled = true; // 1. next button is disabled until user selected an answer
         } else {
             const isCorrect = selectedOptionIndex === currentCard.answers.correct_index;
-            if (isCorrect) {
-                // 2. if the user selected the correct answer (border turns green) enable next button.
-                // isNextButtonDisabled is already false unless it's the last card
-            } else {
+            if (!isCorrect) 
+            {
                 // 3. if the user selected the wrong answer
                 isNextButtonDisabled = true; // Next stays disabled
                 if (!showOnlyCorrectAnswer) {
                     showShowAnswerButton = true; // enable a button called "show answer"
                 } else {
                     // After "Show Answer" is clicked, next should be enabled
-                    isNextButtonDisabled = currentIndex === cards.length - 1;
+                    isNextButtonDisabled = false;
+                }
+            }
+
+            if (!isMounted.current)
+            {
+                isMounted.current = true; 
+                //record user answer in our DB
+                recordAnswer(isCorrect, currentCard.id);
+                if (isCorrect)
+                {
+                    setCorrectAnswers((prev) => prev +1);
                 }
             }
         }
@@ -137,9 +168,51 @@ const CardViewer: React.FC<CardViewerProps> = ({ cards }) => {
     }
 
 
+if (isQuizComplete) {
+    return (
+        <div className="max-w-xl mx-auto p-6 bg-white rounded-2xl shadow-md font-[family-name:var(--font-geist-sans)]">
+            <div className="text-center">
+                <div className="mb-6">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-2">Quiz Complete!</h2>
+                </div>
+                
+                <div className="bg-gray-50 rounded-lg p-6 mb-6">
+                    <div className="text-3xl font-bold text-blue-600 mb-2">
+                        {correctAnswers} / {cards.length}
+                    </div>
+                    <p className="text-gray-600 text-lg">
+                        {correctAnswers === cards.length 
+                            ? "Perfect score! Outstanding work!" 
+                            : correctAnswers > cards.length / 2 
+                            ? "Great job! You're doing well!"
+                            : "Keep practicing! You'll improve with time."}
+                    </p>
+                    <div className="mt-4">
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                            <div 
+                                className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+                                style={{ width: `${(correctAnswers / cards.length) * 100}%` }}
+                            ></div>
+                        </div>
+                        <p className="text-sm text-gray-500 mt-1">
+                            {Math.round((correctAnswers / cards.length) * 100)}% correct
+                        </p>
+                    </div>
+                </div>
+
+                <button
+                    onClick={handleNewQuiz}
+                    className="w-full py-3 px-6 bg-blue-600 text-white font-semibold rounded-md shadow hover:bg-blue-700 transition duration-200"
+                >
+                    Start New Quiz
+                </button>
+            </div>
+        </div>
+    );
+    }
     return (
         <>
-                    <style>{flipStyles}</style>
+         <style>{flipStyles}</style>
         <div className="max-w-xl mx-auto p-6 bg-white rounded-2xl shadow-md font-[family-name:var(--font-geist-sans)]">
             <div className="mb-4">
                 <h2 className="text-lg font-semibold text-gray-700 mb-2">
@@ -225,14 +298,6 @@ const CardViewer: React.FC<CardViewerProps> = ({ cards }) => {
             )}
 
             <div className="flex justify-between mt-6 space-x-2">
-                <button
-                    onClick={handlePrev}
-                    disabled={currentIndex === 0}
-                    className="flex-1 py-2 px-4 bg-blue-600 text-white font-semibold rounded-md shadow hover:bg-blue-700 transition duration-200 disabled:bg-blue-300 disabled:text-gray-100 disabled:cursor-not-allowed"
-                >
-                    Previous
-                </button>
-
                 {showShowAnswerButton && currentCard.answer_type === "select" && (
                     <button
                         onClick={handleShowAnswer}
@@ -252,12 +317,11 @@ const CardViewer: React.FC<CardViewerProps> = ({ cards }) => {
                     disabled={isNextButtonDisabled}
                     className="flex-1 py-2 px-4 bg-blue-600 text-white font-semibold rounded-md shadow hover:bg-blue-700 transition duration-200 disabled:bg-blue-300 disabled:text-gray-100 disabled:cursor-not-allowed"
                 >
-                    Next
+                    {currentIndex === cards.length - 1 ? "Results" : "Next"}
                 </button>
             </div>
         </div>
-        /</>
-        
+        </>
     );
 };
 

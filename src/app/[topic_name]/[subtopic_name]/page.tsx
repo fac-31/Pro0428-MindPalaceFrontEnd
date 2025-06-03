@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "../../../supabaseClient";
 import { useParams } from "next/navigation";
 import CardViewer from "@/components/CardViewer";
@@ -8,11 +8,13 @@ import { CardWithAnswers } from "@/components/CardViewer";
 import BackButton from "@/components/BackButton";
 import { displayName } from "@/lib/utils";
 const backendURL = process.env.NEXT_PUBLIC_BACKEND_URL!;
-
+const QUIZ_LENGTH : number = 10;
 export default function Quiz() {
     const [subtopicExists, setSubtopicExists] = useState<boolean>(true);
     const [chosenCards, setChosenCards] = useState<CardWithAnswers[]>([]);
 
+    const isMounted = useRef(false);
+    
     let cardsWithAnswers: CardWithAnswers[] = [];
     const { topic_name, subtopic_name } = useParams<{
         topic_name: string;
@@ -59,38 +61,52 @@ export default function Quiz() {
     const getCards = async () => {
         const { headers, params } = await getTokenandSetHeaders();
 
+        //cards returned are those who were not attempted yet
+        //or attempted less than 3 times,
+        //or whose mastery is less than 75%.
         const data = await fetch(`${backendURL}/card?${params}`, {
             headers: headers,
         }).then(async (res) => {
             return await res.json();
         });
 
-        if (data && data.length > 0) {
+        let getMoreCards : boolean = false;
+        if (data) 
+        {
             cardsWithAnswers = data as CardWithAnswers[];
+            if (data.length < QUIZ_LENGTH)
+            {
+                getMoreCards = true;
+            }
 
-            //TODO - develop choosing cards:
-            //-- randomly
-            // -- unsolved cards (you need to consult mastery table or join with the mastery table)
-            // - more options?
-        } else {
-            //GENERATE new cards and set cardsWithAnswers to them.
-            const data = await fetch(`${backendURL}/card`, {
-                method: "POST",
-                headers: headers,
-                body: JSON.stringify({
-                    topic: topic_name,
-                    subtopic: subtopic_name,
-                }),
-            }).then(async (res) => {
-                return await res.json();
-            });
+        } 
+        
+        if (getMoreCards || !data)
+        {
+            if (!isMounted.current)
+            {
+                isMounted.current = true; 
+                //GENERATE new cards and set cardsWithAnswers to them.
+                const newData = await fetch(`${backendURL}/card`, {
+                    method: "POST",
+                    headers: headers,
+                    body: JSON.stringify({
+                        topic: topic_name,
+                        subtopic: subtopic_name,
+                    }),
+                }).then(async (res) => {
+                    return await res.json();
+                });
 
-            cardsWithAnswers = data as CardWithAnswers[];
+                //add new generated cards to the existing cards that are not yet mastered.
+                cardsWithAnswers = [...cardsWithAnswers, ...newData];
+            }
+            
         }
 
-        //for starters, randomly select 10 cards out of all cards.
+        //randomly select QUIZ_LENGTH cards out of all cards.
         const shuffled = [...cardsWithAnswers].sort(() => 0.5 - Math.random());
-        const selected = shuffled.slice(0, 10);
+        const selected = shuffled.slice(0, QUIZ_LENGTH);
 
         setChosenCards(selected);
     };
@@ -106,6 +122,8 @@ export default function Quiz() {
                 }
             });
         }
+        isMounted.current = false;
+
     }, [topic_name, subtopic_name, subtopicExists]);
 
     return (
